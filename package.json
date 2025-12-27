@@ -19,5 +19,6 @@
     },
     "main": "dist/index.js",
     "types": "dist/index.d.ts",
-    "files": ["dist"]
+    "files": ["dist"],
+    "keywords": ["test", "mock", "typescript", "ts-jest", "bun", "automock", "createMock"]
 }
