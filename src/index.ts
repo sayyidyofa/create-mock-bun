@@ -1,40 +1,68 @@
-// Lightweight mock factory used in tests (replacement for Bun's `mock`)
-function createBaseMock(defaultImpl?: (...args: any[]) => any) {
-  let impl: ((...args: any[]) => any) | undefined = defaultImpl;
-  const onceQueue: ((...args: any[]) => any)[] = [];
+type AnyFunction = (...args: any[]) => any;
 
-  const fn: any = (...args: any[]) => {
-    fn.mock.calls.push(args);
+/**
+ * Mock methods added to every mocked function
+ */
+export interface MockMethods<T extends AnyFunction> {
+  mock: {
+    calls: Parameters<T>[];
+    results: { type: 'return' | 'throw'; value: unknown }[];
+  };
+  mockImplementation(f: T): this;
+  mockImplementationOnce(f: T): this;
+  mockReturnValue(v: ReturnType<T>): this;
+  mockReturnValueOnce(v: ReturnType<T>): this;
+  mockResolvedValue(v: ReturnType<T> extends Promise<infer U> ? U | Promise<U> : never): this;
+  mockResolvedValueOnce(v: ReturnType<T> extends Promise<infer U> ? U | Promise<U> : never): this;
+  mockRejectedValue(e: unknown): this;
+  mockRejectedValueOnce(e: unknown): this;
+  mockClear(): this;
+  mockReset(): this;
+}
+
+/**
+ * Type representing a mocked function
+ */
+export type Mock<T extends AnyFunction = AnyFunction> = T & MockMethods<T>;
+
+// Lightweight mock factory used in tests (replacement for Bun's `mock`)
+function createBaseMock<T extends AnyFunction>(defaultImpl?: T): Mock<T> {
+  let impl: T | undefined = defaultImpl;
+  const onceQueue: T[] = [];
+
+  const fn = function (this: any, ...args: Parameters<T>): ReturnType<T> {
+    const self = fn as unknown as Mock<T>;
+    self.mock.calls.push(args);
     const next = onceQueue.shift();
     const toCall = next ?? impl;
     try {
-      const res = toCall ? toCall(...args) : undefined;
-      fn.mock.results.push({ type: 'return', value: res });
+      const res = toCall ? toCall.apply(this, args) : undefined;
+      self.mock.results.push({ type: 'return', value: res });
       return res;
     } catch (err) {
-      fn.mock.results.push({ type: 'throw', value: err });
+      self.mock.results.push({ type: 'throw', value: err });
       throw err;
     }
-  };
+  } as unknown as Mock<T>;
 
-  fn.mock = { calls: [] as any[], results: [] as any[] } as any;
+  fn.mock = { calls: [], results: [] };
 
-  fn.mockImplementation = (f: (...args: any[]) => any) => {
+  fn.mockImplementation = (f: T) => {
     impl = f;
     return fn;
   };
 
-  fn.mockImplementationOnce = (f: (...args: any[]) => any) => {
+  fn.mockImplementationOnce = (f: T) => {
     onceQueue.push(f);
     return fn;
   };
 
-  fn.mockReturnValue = (v: any) => fn.mockImplementation(() => v);
-  fn.mockReturnValueOnce = (v: any) => fn.mockImplementationOnce(() => v);
-  fn.mockResolvedValue = (v: any) => fn.mockImplementation(() => Promise.resolve(v));
-  fn.mockResolvedValueOnce = (v: any) => fn.mockImplementationOnce(() => Promise.resolve(v));
-  fn.mockRejectedValue = (e: any) => fn.mockImplementation(() => Promise.reject(e));
-  fn.mockRejectedValueOnce = (e: any) => fn.mockImplementationOnce(() => Promise.reject(e));
+  fn.mockReturnValue = (v: ReturnType<T>) => fn.mockImplementation(((() => v) as unknown) as T);
+  fn.mockReturnValueOnce = (v: ReturnType<T>) => fn.mockImplementationOnce(((() => v) as unknown) as T);
+  fn.mockResolvedValue = (v: unknown) => fn.mockImplementation(((() => Promise.resolve(v)) as unknown) as T);
+  fn.mockResolvedValueOnce = (v: unknown) => fn.mockImplementationOnce(((() => Promise.resolve(v)) as unknown) as T);
+  fn.mockRejectedValue = (e: unknown) => fn.mockImplementation(((() => Promise.reject(e)) as unknown) as T);
+  fn.mockRejectedValueOnce = (e: unknown) => fn.mockImplementationOnce(((() => Promise.reject(e)) as unknown) as T);
 
   fn.mockClear = () => {
     fn.mock.calls = [];
@@ -49,33 +77,27 @@ function createBaseMock(defaultImpl?: (...args: any[]) => any) {
     return fn;
   };
 
-  return fn as any;
+  return fn;
 }
 
 /**
  * Type that transforms a type into a deeply mocked version
  * Mirrors jest.Mocked<T> and @golevelup/ts-jest DeepMocked<T>
  */
-export type DeepMocked<T> = T extends (...args: any[]) => any
-  ? ReturnType<T> extends Promise<infer U>
-    ? (...args: Parameters<T>) => Promise<DeepMocked<U>>
-    : (...args: Parameters<T>) => DeepMocked<ReturnType<T>>
+export type DeepMocked<T> = T extends AnyFunction
+  ? T &
+      ((...args: Parameters<T>) => ReturnType<T> extends Promise<infer U>
+        ? Promise<DeepMocked<U>>
+        : DeepMocked<ReturnType<T>>) &
+      MockMethods<T>
   : T extends new (...args: any[]) => infer U
-  ? new (...args: any[]) => DeepMocked<U>
+  ? T & (new (...args: any[]) => DeepMocked<U>) & MockMethods<AnyFunction>
   : T extends object
-  ? {
-      [K in keyof T]: T[K] extends (...args: any[]) => any
-        ? ReturnType<T[K]> extends Promise<infer U>
-          ? (...args: Parameters<T[K]>) => Promise<DeepMocked<U>>
-          : (...args: Parameters<T[K]>) => DeepMocked<ReturnType<T[K]>>
-        : DeepMocked<T[K]>;
+  ? T & {
+      [K in keyof T]: DeepMocked<T[K]>;
     }
   : T;
 
-/**
- * Internal set to track circular references and prevent infinite recursion
- */
-const circularCache = new WeakSet<object>();
 
 /**
  * Creates a deeply mocked object/function that recursively mocks all properties
@@ -94,16 +116,16 @@ const circularCache = new WeakSet<object>();
  * const mockUserService = createMock<UserService>();
  * await mockUserService.getUser('123'); // Returns mocked User
  */
-export function createMock<T extends any = any>(depth: number = 0): DeepMocked<T> {
+export function createMock<T = unknown>(depth: number = 0): DeepMocked<T> {
   // Prevent infinite recursion with depth limit
   const MAX_DEPTH = 10;
   if (depth > MAX_DEPTH) {
-    return undefined as any;
+    return undefined as unknown as DeepMocked<T>;
   }
 
   // Create a proxy handler for deep mocking
-  const handler: ProxyHandler<any> = {
-    get(target: any, prop: string | symbol, receiver: any): any {
+  const handler: ProxyHandler<Mock<AnyFunction>> = {
+    get(target: Mock<AnyFunction>, prop: string | symbol, _receiver: unknown): unknown {
       // Handle mock metadata (from bun:test mock)
       if (
         prop === 'mock' ||
@@ -119,99 +141,56 @@ export function createMock<T extends any = any>(depth: number = 0): DeepMocked<T
         prop === 'mockReset' ||
         prop === 'mockRestore'
       ) {
-        return target[prop];
+        return (target as Record<string | symbol, any>)[prop];
       }
 
       // Handle well-known symbols
       if (typeof prop === 'symbol') {
-        return target[prop];
+        return (target as Record<string | symbol, any>)[prop];
       }
 
       // Return cached mock if already created
-      if (target[prop] !== undefined) {
-        return target[prop];
+      if ((target as Record<string | symbol, any>)[prop] !== undefined) {
+        return (target as Record<string | symbol, any>)[prop];
       }
 
       // Recursively create nested mocks
-      const nestedMock = createMock<any>(depth + 1);
-      target[prop] = nestedMock;
+      const nestedMock = createMock<unknown>(depth + 1);
+      (target as Record<string | symbol, any>)[prop] = nestedMock;
       return nestedMock;
     },
 
     // Allow setting mock values for custom configuration
-    set(target: any, prop: string | symbol, value: any): boolean {
-      target[prop] = value;
+    set(target: Mock<AnyFunction>, prop: string | symbol, value: unknown): boolean {
+      (target as Record<string | symbol, any>)[prop] = value;
       return true;
     },
 
     // Handle property enumeration
-    ownKeys(target: any): (string | symbol)[] {
+    ownKeys(target: Mock<AnyFunction>): (string | symbol)[] {
       return Object.keys(target);
     },
 
     // Handle property descriptor checks
-    getOwnPropertyDescriptor(target: any, prop: string | symbol) {
+    getOwnPropertyDescriptor(target: Mock<AnyFunction>, prop: string | symbol) {
       if (prop in target) {
         return {
           configurable: true,
           enumerable: true,
-          value: target[prop],
+          value: (target as Record<string | symbol, any>)[prop],
         };
       }
       return undefined;
     },
 
     // Prevent extension checks from failing
-    preventExtensions(target: any): boolean {
+    preventExtensions(_target: Mock<AnyFunction>): boolean {
       return false;
     },
   };
 
   // Create the base mock function
-  const baseMock = createBaseMock(() => createMock<any>(depth + 1));
-
-  // Add utility methods to the mock function
-  (baseMock as any).mockReturnValue = (value: any) => {
-    baseMock.mockImplementation(() => value);
-    return baseMock;
-  };
-
-  (baseMock as any).mockReturnValueOnce = (value: any) => {
-    baseMock.mockImplementationOnce(() => value);
-    return baseMock;
-  };
-
-  (baseMock as any).mockResolvedValue = (value: any) => {
-    baseMock.mockImplementation(() => Promise.resolve(value));
-    return baseMock;
-  };
-
-  (baseMock as any).mockResolvedValueOnce = (value: any) => {
-    baseMock.mockImplementationOnce(() => Promise.resolve(value));
-    return baseMock;
-  };
-
-  (baseMock as any).mockRejectedValue = (error: any) => {
-    baseMock.mockImplementation(() => Promise.reject(error));
-    return baseMock;
-  };
-
-  (baseMock as any).mockRejectedValueOnce = (error: any) => {
-    baseMock.mockImplementationOnce(() => Promise.reject(error));
-    return baseMock;
-  };
-
-  (baseMock as any).mockClear = () => {
-    baseMock.mock.calls = [];
-    baseMock.mock.results = [];
-    return baseMock;
-  };
-
-  (baseMock as any).mockReset = () => {
-    baseMock.mockClear();
-    baseMock.mockImplementation(() => createMock<any>(depth + 1));
-    return baseMock;
-  };
+  const baseMock = createBaseMock(() => createMock<unknown>(depth + 1));
 
   // Create proxy around the mock function for deep property access
   return new Proxy(baseMock, handler) as DeepMocked<T>;
@@ -233,14 +212,8 @@ export type Mocked<T> = DeepMocked<T>;
  * const mock = createMock<UserService>();
  * isMock(mock); // true
  */
-export function isMock(value: any): value is ReturnType<typeof createBaseMock> {
-  return (
-    typeof value === 'function' &&
-    value != null &&
-    typeof value.mock === 'object' &&
-    Array.isArray(value.mock.calls) &&
-    Array.isArray(value.mock.results)
-  );
+export function isMock(value: unknown): value is Mock {
+  return (typeof value === 'function' && true && 'mock' in value && typeof (value as Record<string, any>).mock === 'object' && Array.isArray((value as Record<string, any>).mock.calls) && Array.isArray((value as Record<string, any>).mock.results));
 }
 
 /**
@@ -274,13 +247,13 @@ export function createMockWithDefaults<T extends object>(
 
   if (defaults) {
     Object.entries(defaults).forEach(([key, value]) => {
-      const mockProp = (mockObj as any)[key];
-      if (typeof mockProp === 'function' && typeof value === 'function') {
-        mockProp.mockImplementation(value);
-      } else if (typeof mockProp === 'function') {
-        mockProp.mockReturnValue(value);
+      if (typeof value === 'function') {
+        const mockProp = (mockObj as Record<string | symbol, unknown>)[key];
+        if (isMock(mockProp)) {
+          mockProp.mockImplementation(value as AnyFunction);
+        }
       } else {
-        (mockObj as any)[key] = value;
+        (mockObj as Record<string | symbol, unknown>)[key] = value;
       }
     });
   }
@@ -298,7 +271,7 @@ export function createMockWithDefaults<T extends object>(
  * console.log(calls.callCount); // 1
  * console.log(calls.lastCall); // [42]
  */
-export function getCallInfo(mockFn: any) {
+export function getCallInfo<T extends AnyFunction>(mockFn: Mock<T>) {
   if (!isMock(mockFn)) {
     throw new TypeError('Argument must be a mock function');
   }

@@ -45,4 +45,4 @@ Features
 ✅ Zero external dependencies (Bun built-in only)
 
 Complete Implementation
-See the source file create-mock.ts for the full implementation.
+See the source file src/index.ts for the full implementation.

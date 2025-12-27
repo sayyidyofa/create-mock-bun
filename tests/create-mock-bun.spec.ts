@@ -1,11 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import {
-  createMock,
-  createMockWithDefaults,
-  getCallInfo,
-  isMock,
-  type DeepMocked,
-} from '../src';
+import {describe, expect, it} from 'bun:test';
+import {createMock, createMockWithDefaults, type DeepMocked, getCallInfo, isMock,} from '../src';
 
 /**
  * Test interfaces mirroring real-world scenarios
@@ -173,6 +167,23 @@ describe('createMock', () => {
       expect(users).toHaveLength(2);
     });
 
+    it('should handle non-function property defaults', () => {
+      interface SimpleService {
+        id: string;
+        count: number;
+        isActive: boolean;
+      }
+      const mock = createMockWithDefaults<SimpleService>({
+        id: 'service-1',
+        count: 42,
+        isActive: true,
+      });
+
+      expect(mock.id).toBe('service-1');
+      expect(mock.count).toBe(42);
+      expect(mock.isActive).toBe(true);
+    });
+
     it('should allow overriding defaults per test', async () => {
       const mockUserService = createMockWithDefaults<UserService>({
         getUser: async () => ({
@@ -278,13 +289,13 @@ describe('createMock', () => {
       mockUserService.cache.set.mockReturnValue(undefined);
 
       // Simulate business logic
-      let user = mockUserService.cache.get('user:1');
+      let user = mockUserService.cache.get<User>('user:1');
       if (!user) {
         user = await mockUserService.repository.findById('1');
         mockUserService.cache.set('user:1', user);
       }
 
-      expect(user.name).toBe('John');
+      expect(user!.name).toBe('John');
       expect(getCallInfo(mockUserService.cache.get).callCount).toBe(1);
       expect(getCallInfo(mockUserService.cache.set).callCount).toBe(1);
     });
@@ -325,6 +336,52 @@ describe('createMock', () => {
       const result = mockGenericFn('test');
 
       expect(result).toBeDefined();
+    });
+
+    it('should handle symbols correctly', () => {
+      const mock = createMock<any>();
+      const sym = Symbol('test');
+      expect(mock[sym]).toBeUndefined();
+      
+      mock[sym] = 'value';
+      expect(mock[sym]).toBe('value');
+    });
+
+    it('should respect MAX_DEPTH', () => {
+      let current = createMock<any>();
+      for (let i = 0; i < 10; i++) {
+        current = current.prop;
+      }
+      expect(current).toBeDefined();
+      expect(current.prop).toBeUndefined(); // Depth 11
+    });
+
+    it('should work as a constructor', () => {
+      interface MyClass {
+        method(): string;
+      }
+      const MockClass = createMock<{ new(): MyClass }>();
+      const instance = new MockClass();
+      
+      expect(instance).toBeDefined();
+      instance.method.mockReturnValue('hello');
+      expect(instance.method()).toBe('hello');
+    });
+
+    it('should identify mocks correctly with isMock', () => {
+      const mock = createMock<any>();
+      expect(isMock(mock)).toBe(true);
+      expect(isMock(() => {})).toBe(false);
+      expect(isMock({})).toBe(false);
+      expect(isMock(null)).toBe(false);
+      expect(isMock(undefined)).toBe(false);
+    });
+
+    it('should throw TypeError in getCallInfo for non-mocks', () => {
+      // @ts-expect-error - Testing invalid input
+      expect(() => getCallInfo({})).toThrow(TypeError);
+      // @ts-expect-error - Testing invalid input
+      expect(() => getCallInfo(() => {})).toThrow('Argument must be a mock function');
     });
   });
 });
