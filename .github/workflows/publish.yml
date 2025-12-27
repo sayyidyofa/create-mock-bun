@@ -27,10 +27,10 @@ jobs:
 
       - name: Publish to npm
         env:
-          BUN_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          if [ -z "${BUN_AUTH_TOKEN}" ]; then
+          if [ -z "${NPM_CONFIG_TOKEN}" ]; then
             echo "NPM_TOKEN is not set. Skipping publish.";
             exit 0;
           fi
-          bun publish --access public
+          bun publish -p --access public
